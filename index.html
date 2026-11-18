@@ -1161,7 +1161,7 @@ function initStudent(code){
       if(d.round!==S.round){ S.round=d.round; S.pos=0; $('bigbtn').dataset.k=''; $('s-banner').innerHTML=''; }
       S.locked=!!d.on; updateBuzz();
     }
-    else if(d.t==='pos'){ if(d.n>0){ S.pos=d.n; updateBuzz(); } else if(d.why==='locked'){ S.locked=true; updateBuzz(); } }
+    else if(d.t==='pos'){ if(d.n>0){ const wasFirst=(d.n===1&&S.pos!==1); S.pos=d.n; updateBuzz(); if(wasFirst&&S.team) playSound(S.team.sound,S.team.rec); } else if(d.why==='locked'){ S.locked=true; updateBuzz(); } }
     else if(d.t==='score'){ S.score=d.n||0; $('s-score').textContent=S.score; const p=$('s-scorepill'); p.classList.remove('bump'); void p.offsetWidth; p.classList.add('bump'); if(d.d>0&&S.team){ const m=MASCOT_BY[S.team.emoji]; burst(innerWidth-70,60,[m.c1,m.c2,'#ffe14a'],50,1,S.team.emoji); banner('⭐ +'+d.d+' points!'); } if(S.team){ S.team.score=S.score; lsSet('buzzer_team_'+code,JSON.stringify(S.team)); } }
     else if(d.t==='first'){ if(d.cid!==S.cid) banner(d.emoji+' '+d.name+' buzzed first!'); }
     else if(d.t==='kick'){ S.kicked=true; lsDel('buzzer_team_'+code); try{S.peer.destroy();}catch(e){} $('removed').classList.remove('hidden'); }

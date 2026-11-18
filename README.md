@@ -20,7 +20,7 @@ GitHub Pages is HTTPS, which the **record your own noise** feature needs (browse
 2. Show the QR code (or the 6-letter room code). Teams appear as colourful chips as they finish picking. Click a chip to hear that team's sound.
 3. Press **Start game**. The buzzers start **LOCKED**.
 4. Flip the big switch (or press the **Space bar**) to go **LIVE!**. Each flip to live starts a fresh round and clears the buzz list.
-5. The first team to buzz triggers a full-screen celebration and **only their sound plays**. The **Buzz order** panel lists 1st → last with the time gap behind the winner. Tap 🔊 on any row to replay a team's sound.
+5. The first team to buzz triggers a full-screen celebration and **only their sound plays**, on the hub and also on that team's own device. The **Buzz order** panel lists 1st → last with the time gap behind the winner. Tap 🔊 on any row to replay a team's sound.
 6. Pick how many points a tap is worth (**1 / 2 / 3 / 5 / 10**), then press **+** on a scoreboard card or on a row in the buzz order. **−** takes points off.
 7. Flip the switch back to **LOCKED** to stop buzzing. The list stays on screen so you can award points. **Clear** empties it without changing the lock.
 
