@@ -10,6 +10,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bungee&family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>/* some school filters block unpkg: fall back to a second CDN so joining still works */
+if(typeof Peer==='undefined'){ document.write('<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"><\/script>'); }</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
 :root{
@@ -444,14 +446,26 @@ input{font:inherit}
    After that, buzzes travel directly device-to-device (WebRTC).
    If your school network blocks peer-to-peer, add a TURN server below.
    ===================================================================== */
+/* TURN servers are the real fix for "some devices just won't connect". Strict school
+   networks block direct device-to-device traffic, and a TURN server relays it instead.
+   Paste yours here (see README, "Making joining more reliable"). Leave empty to skip.
+   Tip: use a turns: (port 443) address too, because that looks like normal web traffic. */
+const TURN_SERVERS = [
+  // { urls:['turn:YOUR.TURN.HOST:80','turn:YOUR.TURN.HOST:443?transport=tcp','turns:YOUR.TURN.HOST:443?transport=tcp'], username:'YOUR_USER', credential:'YOUR_PASSWORD' }
+];
 const PEER_OPTS = {
   // host:'your-peerjs-server.example.com', port:443, path:'/', secure:true,   // self-hosted PeerServer
-  config: { iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-    // , { urls:'turn:your.turn.server:3478', username:'user', credential:'pass' }
-  ] }
+  config: {
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302'] },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+      ...TURN_SERVERS
+    ],
+    iceCandidatePoolSize: 4          // start gathering network routes early = faster joins
+  }
 };
+const JOIN_TRIES = 6;                 // how many times a student's device keeps trying before it gives up
 const ID_PREFIX = 'buzzer-v1-';
 const MAX_REC_MS = 3000;
 
@@ -474,7 +488,7 @@ const MASCOT_BY = Object.fromEntries(MASCOTS.map(m=>[m.e,m]));
 
 /* ---- tiny synth engine: every sound is made from oscillators + noise, no files needed ---- */
 let AC=null;
-function ac(){ if(!AC){ const C=window.AudioContext||window.webkitAudioContext; AC=new C(); } if(AC.state==='suspended') AC.resume(); return AC; }
+function ac(){ if(!AC){ const C=window.AudioContext||window.webkitAudioContext; AC=new C(); } if(AC.state!=='running'){ try{ AC.resume(); }catch(e){} } return AC; }
 function mkNoise(c){ if(!c._nb){ const b=c.createBuffer(1,c.sampleRate*2,c.sampleRate), d=b.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1; c._nb=b; } return c._nb; }
 function tone(c,out,o){
   const {type='sine',f=440,f2,t,d=.3,v=.5,a=.006,vib=0,vibf=8,lp,q=1}=o;
@@ -533,17 +547,96 @@ const SOUNDS = [
 ];
 const SOUND_BY = Object.fromEntries(SOUNDS.map(s=>[s.id,s]));
 const VOL = {boing:1,laser:1.25,coin:1.7,honk:1,whistle:1.3,zap:2.2,fanfare:1.4,power:2.4,whoosh:2.2,dolphin:1.7,tweet:1.4,sparkle:1.3,trombone:1.2,wobble:0.5,splat:0.75,tom:0.85,robot:1.4,xylo:1,rocket:1.1};   // loudness balancing so every sound feels equally punchy
-let masterOut=null;
-function playSound(id,rec){
+/* ---------------------------------------------------------------------
+   LOUD + LONG PLAYBACK
+   Every synth sound is rendered once into a buffer, then:
+   - boosted with soft-clipping (adds harmonics, so low "thuddy" sounds still come out of small
+     laptop speakers) and normalised to full volume, so every sound is equally loud
+   - repeated back-to-back until it lasts at least MIN_PLAY_SEC, so nobody misses it
+   --------------------------------------------------------------------- */
+const MIN_PLAY_SEC = 2.2;           // every buzzer sound lasts at least this long
+const SND_GAP = .12;                // short pause between repeats
+const BUF = new Map(), RECBUF = new Map(), RENDERING = new Map();
+let PLAYING = [], master = null;
+const isHub = () => (typeof T!=='undefined' && !!T.code);
+
+function loudify(src, drive, trim){
+  let pk=0; for(let i=0;i<src.length;i++){ const a=Math.abs(src[i]); if(a>pk) pk=a; }
+  if(pk<1e-5) return new Float32Array(src.length);
+  const k=1/pk, td=Math.tanh(drive), out=new Float32Array(src.length);
+  for(let i=0;i<src.length;i++) out[i]=Math.tanh(drive*src[i]*k)/td;
+  let end=out.length;
+  if(trim){ while(end>1 && Math.abs(out[end-1])<.02) end--; end=Math.min(out.length,end+2000); }
+  const res=out.slice(0,Math.max(end,1)); let p2=0; for(let i=0;i<res.length;i++){ const a=Math.abs(res[i]); if(a>p2) p2=a; }
+  const g=.98/(p2||1); for(let i=0;i<res.length;i++) res[i]*=g;
+  return res;
+}
+async function renderSound(id){
+  if(BUF.has(id)) return BUF.get(id);
+  if(RENDERING.has(id)) return RENDERING.get(id);
+  const job=(async()=>{
+    const s=SOUND_BY[id]; if(!s) return null;
+    const OC=window.OfflineAudioContext||window.webkitOfflineAudioContext; if(!OC) return null;
+    const sr=44100, oc=new OC(1,sr*4,sr), m=oc.createGain(); m.connect(oc.destination);
+    s.fn(oc,m,.02);
+    const r=await oc.startRendering();
+    const data=loudify(r.getChannelData(0),2.4,true);
+    const c=ac(), buf=c.createBuffer(1,data.length,sr); buf.copyToChannel(data,0);
+    BUF.set(id,buf); return buf;
+  })().catch(e=>{ console.warn('render failed',id,e); return null; }).finally(()=>RENDERING.delete(id));
+  RENDERING.set(id,job); return job;
+}
+async function recBuffer(rec){
+  if(RECBUF.has(rec)) return RECBUF.get(rec);
+  const c=ac(), ab=await (await fetch(rec)).arrayBuffer();
+  const raw=await new Promise((res,rej)=>{ const p=c.decodeAudioData(ab,res,rej); if(p&&p.then) p.then(res,rej); });
+  const n=raw.length, mono=new Float32Array(n);
+  for(let ch=0;ch<raw.numberOfChannels;ch++){ const d=raw.getChannelData(ch); for(let i=0;i<n;i++) mono[i]+=d[i]/raw.numberOfChannels; }
+  const data=loudify(mono,1.6,false), buf=c.createBuffer(1,data.length,raw.sampleRate); buf.copyToChannel(data,0);
+  RECBUF.set(rec,buf); return buf;
+}
+function prewarmSounds(){ let i=0; const next=()=>{ if(i>=SOUNDS.length) return; renderSound(SOUNDS[i++].id).then(()=>setTimeout(next,0)); }; next(); }
+
+function getMaster(c){
+  if(master&&master.ctx===c) return master.node;
+  const g=c.createGain(); g.gain.value=1;
+  const lim=c.createDynamicsCompressor(); lim.threshold.value=-2; lim.knee.value=0; lim.ratio.value=20; lim.attack.value=.001; lim.release.value=.08;
+  g.connect(lim); lim.connect(c.destination); master={ctx:c,node:g}; return g;
+}
+function stopSounds(){ PLAYING.forEach(h=>{ try{ h.stop(); }catch(e){} }); PLAYING=[]; }
+function playBuffer(buf){
+  const c=ac(), out=c.createGain(); out.gain.value=isHub()?1:.9; out.connect(getMaster(c));
+  const n=buf.duration>=MIN_PLAY_SEC-.2?1:Math.min(16,Math.max(1,Math.ceil((MIN_PLAY_SEC+SND_GAP)/(buf.duration+SND_GAP))));
+  const t0=c.currentTime+.03, srcs=[];
+  for(let i=0;i<n;i++){ const s=c.createBufferSource(); s.buffer=buf; s.connect(out); s.start(t0+i*(buf.duration+SND_GAP)); srcs.push(s); }
+  const h={ stop(){ srcs.forEach(s=>{ try{ s.stop(); }catch(e){} }); try{ out.disconnect(); }catch(e){} } };
+  PLAYING.push(h); setTimeout(()=>{ PLAYING=PLAYING.filter(x=>x!==h); }, (n*(buf.duration+SND_GAP)+.5)*1000);
+}
+function liveFallback(id){   // used only if offline rendering is unavailable
+  const s=SOUND_BY[id]; if(!s) return; const c=ac(), m=c.createGain(); m.gain.value=2*(VOL[id]||1); m.connect(getMaster(c));
+  for(let i=0;i<3;i++) s.fn(c,m,c.currentTime+.03+i*.8);
+}
+async function ensureRunning(c){
+  if(c.state==='running') return true;
+  try{ await Promise.race([c.resume(),new Promise(r=>setTimeout(r,250))]); }catch(e){}
+  return c.state==='running';
+}
+async function playSound(id,rec){
   try{
-    if(id==='rec' && rec){ const a=new Audio(rec); a.play().catch(()=>{}); return a; }
-    const s=SOUND_BY[id]; if(!s) return;
-    const c=ac(); const m=c.createGain(); m.gain.value=.85*(VOL[id]||1);
-    const lim=c.createDynamicsCompressor(); lim.threshold.value=-8; lim.knee.value=6; lim.ratio.value=14; lim.attack.value=.002; lim.release.value=.1;
-    m.connect(lim); lim.connect(c.destination);
-    s.fn(c,m,c.currentTime+.02);
+    const c=ac();
+    if(!(await ensureRunning(c))){ if(isHub()) toast('🔇 Sound is blocked. Click anywhere on this page, then try again.',4500); return; }
+    stopSounds();
+    if(id==='rec' && rec){
+      try{ playBuffer(await recBuffer(rec)); }
+      catch(e){ const a=new Audio(rec); a.volume=1; a.play().catch(()=>{}); }
+      return;
+    }
+    const buf=await renderSound(id);
+    if(buf) playBuffer(buf); else liveFallback(id);
   }catch(e){ console.warn('sound failed',e); }
 }
+// browsers only allow sound after a tap/click: keep waking the audio up on every interaction
+['pointerdown','keydown','touchend'].forEach(ev=>addEventListener(ev,()=>{ try{ ac(); }catch(e){} },{passive:true}));
 
 /* =====================================================================
    SHARED HELPERS
@@ -652,7 +745,7 @@ function initTeacher(){
   motion($('scan-title'),'SCAN TO JOIN',{hue:200});
   motion($('logo'),'BUZZER');
   motion($('order-title'),'BUZZ ORDER',{hue:60,radius:3});
-  ac(); // unlock audio inside this click
+  ac(); prewarmSounds(); // unlock audio inside this click, and get every sound ready to fire instantly
   $('btn-start').onclick=startGame;
   $('lock').onclick=()=>setLocked(!T.locked);
   $('btn-clear').onclick=()=>{ newRound(); toast('Buzz list cleared'); };
@@ -730,6 +823,7 @@ function onStudentConnection(conn){
   conn.on('error',e=>console.warn('conn error',e));
 }
 function handleStudent(conn,cid,d){
+  if(d.t==='ping'){ try{ conn.send({t:'pong'}); }catch(e){} return; }
   if(d.t==='hello'){ const t=T.teams.get(cid); try{ conn.send({t:'state',...takenLists(),locked:T.locked,round:T.round,team:t?{name:t.name,emoji:t.emoji,sound:t.sound,score:t.score}:null,pos:posOf(cid)}); }catch(e){} return; }
   if(d.t==='claim') return onClaim(conn,cid,d);
   const t=T.teams.get(cid); if(!t||t.conn!==conn) return;
@@ -745,6 +839,7 @@ function onClaim(conn,cid,d){
   let t=T.teams.get(cid);
   if(!t){ t={cid,score:0,idx:T.idx++,el:null,online:true}; T.teams.set(cid,t); T.pending.delete(cid); if(T.started) lastJoinFx=cid; }
   Object.assign(t,{name,emoji,sound,rec:sound==='rec'?d.rec:null,conn,online:true});
+  if(t.rec) recBuffer(t.rec).catch(()=>{});
   saveTeams();
   try{ conn.send({t:'claimed',ok:true,team:{name,emoji,sound,score:t.score},locked:T.locked,round:T.round,pos:posOf(cid)}); }catch(e){}
   bcastTaken(); renderLobby(); renderBoard(); renderOrder();
@@ -937,6 +1032,7 @@ function initStudent(code){
   /* ----- sound step ----- */
   let playingBtn=null;
   function renderSounds(){
+    prewarmSounds();
     const g=$('snd-grid'); g.innerHTML='';
     if(window.MediaRecorder && navigator.mediaDevices){
       const r=document.createElement('button'); r.className='opt rec'+(S.rec?' has':'')+(S.pick.sound==='rec'?' sel':'');
@@ -979,7 +1075,7 @@ function initStudent(code){
     $$('#r-use').onclick=()=>{ S.rec=tmp; S.pick.sound='rec'; stopAll(); m.remove(); renderSounds(); $('btn-s-done').disabled=false; };
     $$('#r-mic').onclick=async()=>{
       if(mr&&mr.state==='recording') return;
-      try{ stream=await navigator.mediaDevices.getUserMedia({audio:true}); }catch(e){ $$('#r-msg').textContent='Microphone is blocked. Allow it in your browser settings, or pick a sound instead.'; return; }
+      try{ stream=await navigator.mediaDevices.getUserMedia({audio:{autoGainControl:true,noiseSuppression:false,echoCancellation:false}}); }catch(e){ $$('#r-msg').textContent='Microphone is blocked. Allow it in your browser settings, or pick a sound instead.'; return; }
       const types=['audio/webm;codecs=opus','audio/mp4','audio/webm','audio/ogg;codecs=opus']; const mt=types.find(t=>MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t));
       try{ mr=new MediaRecorder(stream,mt?{mimeType:mt,audioBitsPerSecond:32000}:{audioBitsPerSecond:32000}); }catch(e){ $$('#r-msg').textContent='Recording isn’t supported here. Pick a sound instead.'; stopAll(); return; }
       chunks=[]; mr.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
@@ -1074,42 +1170,79 @@ function initStudent(code){
   function refreshPickers(){ if(S.step==='mascot') renderMascots(); else if(S.step==='sound') renderSounds(); }
 
   /* ----- connection ----- */
-  let attemptT=null;
+  let attemptT=null, gen=0, lastRx=0, hbT=null, backoff=0;
   function setDot(ok){ const d=$('s-dot'); d.classList.remove('hidden'); d.classList.toggle('bad',!ok); }
+  function joinStatus(txt,hint){ $('btn-join').disabled=true; $('btn-join').textContent=txt; $('join-err').textContent=hint||''; }
+  // keeps a heartbeat so a silently-dead connection (iPad slept, Wi-Fi hopped) is noticed and rebuilt
+  function startHeartbeat(){
+    clearInterval(hbT);
+    hbT=setInterval(()=>{
+      if(S.kicked||!S.joined) return;
+      if(S.conn&&S.conn.open){ send({t:'ping'}); if(Date.now()-lastRx>15000){ setDot(false); connect(); } }
+    },4000);
+  }
+  function reconnectSoon(){
+    if(S.kicked) return; setDot(false);
+    const d=Math.min(8000,700*Math.pow(1.7,backoff++))+Math.random()*400;
+    clearTimeout(S._rt); S._rt=setTimeout(connect,d);
+  }
+  // an attempt failed before we ever got in: try again automatically a few times before bothering the student
+  function retryOrFail(msg,maxTries){
+    if(S.kicked) return;
+    if(S.joined){ reconnectSoon(); return; }
+    S.tries=(S.tries||0)+1;
+    if(S.tries<(maxTries||JOIN_TRIES)){
+      joinStatus('Connecting… try '+(S.tries+1)+' of '+(maxTries||JOIN_TRIES),S.tries>=2?'Still trying. Hang on, this can take a moment on busy Wi-Fi…':'');
+      setTimeout(connect,600+S.tries*700);
+    } else failed(msg+(S.tries>=JOIN_TRIES?' Tip: turn Wi-Fi off and on, or move closer to the router, then press Join again.':''));
+  }
   function connect(){
     if(S.kicked) return;
+    clearTimeout(S._rt); clearTimeout(attemptT);
+    const my=++gen;
     try{ S.peer&&S.peer.destroy(); }catch(e){}
+    if(typeof Peer==='undefined'){ failed('The connection library could not load. Your school network may be blocking it. Ask your teacher.'); return; }
     const peer=S.peer=new Peer(undefined,PEER_OPTS);
+    const alive=()=>my===gen&&!S.kicked;
+    // each try waits a bit longer than the last (slow networks need it)
+    const wait=12000+Math.min(S.tries||0,4)*4000;
+    attemptT=setTimeout(()=>{ if(alive()&&!(S.conn&&S.conn.open)) retryOrFail('Couldn’t reach your teacher. Check the room code and your Wi-Fi.'); },wait);
     peer.on('open',()=>{
+      if(!alive()) return;
       const conn=S.conn=peer.connect(ID_PREFIX+code,{metadata:{clientId:cid,name:S.name},reliable:true});
-      clearTimeout(attemptT); attemptT=setTimeout(()=>{ if(!conn.open) failed('Couldn’t reach your teacher. Check the room code and your Wi-Fi.'); },12000);
       // The student always speaks first: messages the teacher sends the instant a channel opens can be lost, so we say hello (and keep saying it until we get the state back).
       let gotState=false, helloT=null;
-      const hello=()=>{ if(gotState||!conn.open){ clearInterval(helloT); return; } send({t:'hello'}); };
-      conn.on('open',()=>{ clearTimeout(attemptT); S.joined=true; setDot(true); hello(); helloT=setInterval(hello,1500); });
-      conn.on('data',d=>{ if(d&&d.t==='state'){ if(gotState) return; gotState=true; clearInterval(helloT); } onData(d); });
-      conn.on('close',()=>{ clearInterval(helloT); if(S.kicked) return; setDot(false); setTimeout(connect,1500); });
+      const hello=()=>{ if(gotState||!conn.open||!alive()){ clearInterval(helloT); return; } send({t:'hello'}); };
+      conn.on('open',()=>{ if(!alive()) return; clearTimeout(attemptT); S.joined=true; S.tries=0; backoff=0; lastRx=Date.now(); setDot(true); hello(); helloT=setInterval(hello,1500); startHeartbeat(); });
+      conn.on('data',d=>{ lastRx=Date.now(); if(d&&d.t==='state'){ if(gotState) return; gotState=true; clearInterval(helloT); } onData(d); });
+      conn.on('close',()=>{ clearInterval(helloT); if(!alive()) return; if(S.joined) reconnectSoon(); else retryOrFail('Couldn’t reach your teacher. Check the room code and your Wi-Fi.'); });
+      conn.on('error',()=>{ if(alive()&&!S.joined) retryOrFail('Couldn’t reach your teacher. Check the room code and your Wi-Fi.'); });
     });
-    peer.on('disconnected',()=>{ try{peer.reconnect();}catch(e){} });
+    peer.on('disconnected',()=>{ if(!alive()) return; try{peer.reconnect();}catch(e){} });
     peer.on('error',err=>{
-      if(S.kicked) return;
-      if(err.type==='peer-unavailable') failed('Room not found. Check the code, and make sure your teacher has opened the room.');
-      else if(S.joined){ setDot(false); setTimeout(connect,2500); }
-      else failed('Connection problem ('+err.type+'). Try again.');
+      if(!alive()) return;
+      clearTimeout(attemptT);
+      if(err.type==='peer-unavailable') retryOrFail('Room not found. Check the code, and make sure your teacher has opened the room.',4);
+      else if(S.joined) reconnectSoon();
+      else retryOrFail('Connection problem ('+err.type+'). Try again.');
     });
   }
   function failed(msg){
-    clearTimeout(attemptT);
-    if(S.joined){ setDot(false); setTimeout(connect,3000); return; }
+    clearTimeout(attemptT); clearTimeout(S._rt); gen++;
+    if(S.joined){ reconnectSoon(); return; }
     try{S.peer&&S.peer.destroy();}catch(e){}
+    S.tries=0;
     $('join-err').textContent=msg; $('btn-join').disabled=false; $('btn-join').textContent='Join! 🚀';
   }
+  // wake-ups: when a tablet comes back from sleep or the network returns, check the line straight away
+  function checkLine(){ if(S.kicked||!S.joined) return; if(!(S.conn&&S.conn.open)||Date.now()-lastRx>9000){ setDot(false); connect(); } }
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) checkLine(); });
+  addEventListener('online',checkLine); addEventListener('pageshow',checkLine);
   const doJoin=()=>{
     const n=cleanName($('name-in').value);
     if(!n){ $('join-err').textContent='Please type your name first.'; $('name-in').focus(); return; }
     S.name=n; lsSet('buzzer_name',n); ac();
-    $('join-err').textContent=''; $('btn-join').disabled=true; $('btn-join').textContent='Joining…';
-    connect();
+    S.tries=0; joinStatus('Joining…',''); connect();
   };
   $('btn-join').onclick=doJoin;
   $('name-in').addEventListener('keydown',e=>{ if(e.key==='Enter') doJoin(); });

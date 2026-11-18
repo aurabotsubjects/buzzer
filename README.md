@@ -47,13 +47,27 @@ Students connect to the teacher directly over WebRTC using [PeerJS](https://peer
 ## Notes and limits
 
 - **Fairness:** the order is set by when each buzz reaches the teacher's computer. On a normal school Wi-Fi the difference between devices is a few milliseconds to a few tens of milliseconds, so it is very fair for a classroom game, but it is not a TV-studio timing system. Keep every device on good Wi-Fi.
-- **Sound on the teacher's computer:** browsers only play sound after the page has been clicked once. Pressing **Open hub** does that, so you are covered. If you refresh the teacher page, click anywhere once before the first round (the game start button does it).
+- **Sound on the teacher's computer:** browsers only play sound after the page has been clicked once. Pressing **Open hub** does that, so you are covered. If you refresh the teacher page, click anywhere once before the first round (the game start button does it). If sound is still blocked, the hub shows a "Sound is blocked" message instead of staying silent.
+- **Loud and long sounds:** every sound is pre-rendered, boosted and levelled so they are all equally loud (low thuddy sounds get extra harmonics so laptop speakers can actually play them), and each one repeats until it lasts at least 2.2 seconds. Change `MIN_PLAY_SEC` near the sound code to make them shorter or longer. Recorded noises are levelled up the same way. The hub is also the loudest place: turn the computer and speaker volume up, since the app is already at full level.
 - **iPad silent switch:** if students hear nothing when previewing sounds, the side switch may be on silent.
 - **Recorded noises** are shared as small audio clips (about 3 seconds). They live only in the teacher's page memory and are not stored anywhere.
-- **School networks:** some block peer-to-peer traffic. If students can't connect, add a TURN server in `PEER_OPTS` near the top of the script, or self-host a PeerServer (both are commented there).
+- **School networks:** some block peer-to-peer traffic. If students can't connect, add a TURN server in `TURN_SERVERS` near the top of the script, or self-host a PeerServer (both are commented there). See below.
 - **Reliability of the public PeerJS server:** it is free and best-effort. For heavy daily use, self-host `peerjs-server`.
 - Anyone with the room code can join, so only show the QR to your class. ✕ on a card removes a team and **End** closes everything.
 
 ## Customising
 
 Everything is in `index.html`. The 30 mascots (emoji, name and two team colours) are in the `MASCOTS` list, and the sounds are in `SOUNDS`. Each sound is a few lines of oscillator/noise code, so it is easy to tweak or swap one.
+
+## Making joining more reliable
+
+What the app now does by itself:
+
+- **Automatic retries:** a student's device tries up to 6 times (`JOIN_TRIES`), waiting a little longer each time, and shows "Connecting… try 2 of 6" instead of failing on the first slow attempt. If the room briefly looks missing it retries that too.
+- **Backup library source:** if the school filter blocks `unpkg.com`, the connection library loads from `cdn.jsdelivr.net` instead.
+- **More route finders:** extra free STUN servers (Google, Cloudflare, Twilio) and early route gathering, so more devices find a path to the teacher.
+- **Keeps itself connected:** a heartbeat spots a dead connection (tablet slept, Wi-Fi hopped) within about 15 seconds, and a student's device reconnects straight away when it wakes up or the network comes back, with gentle back-off instead of hammering the server.
+
+The one thing that only you can add is a **TURN server**. Where a network blocks direct device-to-device traffic, nothing in the app can get around it, but a TURN server relays the traffic and fixes most of these cases. Free options exist (for example the free tier at metered.ca, or Cloudflare Calls TURN). Create an account, copy the `turn:` / `turns:` addresses plus the username and password they give you, and paste them into `TURN_SERVERS` at the top of the script. Include a `turns:...:443` address, because that looks like normal secure web traffic and gets through most filters. Only a handful of kids need it, but it is what rescues them.
+
+Quick tips for students who still struggle: turn Wi-Fi off and on, make sure it is the school Wi-Fi (not mobile data or a guest network), and close other tabs.
