@@ -24,6 +24,8 @@ GitHub Pages is HTTPS, which the **record your own noise** feature needs (browse
 6. Pick how many points a tap is worth (**1 / 2 / 3 / 5 / 10**), then press **+** on a scoreboard card or on a row in the buzz order. **−** takes points off.
 7. Flip the switch back to **LOCKED** to stop buzzing. The list stays on screen so you can award points. **Clear** empties it without changing the lock.
 
+**Finishing the game:** press **🏁 Finish** to lock the buzzers and show a podium of the top 3 teams. 3rd place rises first, then 2nd, then the winner with a fanfare, confetti and a 👑 on their emoji under a big WINNER! banner. Teams on the same score share a step (two teams tied for first both get the crown). **Back to game** (or Esc) returns to the scoreboard, and **End & close room** closes everything. It asks you to award some points first if nobody has scored.
+
 Other controls: **Rank** turns automatic leaderboard sorting on or off, 🔊 mutes the hub, **QR** re-shows the join code for latecomers, **Reset** sets every score to 0, **End** closes the room, and the ✕ on a card (appears on hover) removes a team.
 
 **Students**

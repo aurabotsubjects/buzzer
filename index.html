@@ -316,6 +316,28 @@ input{font:inherit}
 @media (prefers-reduced-motion:reduce){
   .blob,.float-emo,.face::after,.mt .in,.emo,.pick .big{animation:none!important}
 }
+
+/* ---- final podium ---- */
+#podium{position:fixed;inset:0;z-index:160;background:radial-gradient(ellipse at 50% 25%,#4b1fa8 0%,#1d0a4d 62%,#0d0328 100%);display:flex;flex-direction:column;align-items:center;padding:34px 20px 22px;overflow:auto;animation:fade .3s}
+#podium.hidden{display:none}
+.pod-title{font-size:clamp(1.8rem,min(6vw,8vh),3.6rem);margin:0;flex:none}
+.pod-stage{flex:1;display:flex;align-items:flex-end;justify-content:center;gap:clamp(8px,2vw,26px);width:100%;max-width:1150px;padding-top:8px}
+.pod-col{flex:1 1 0;max-width:360px;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end}
+.pod-winlabel{font-family:var(--display);color:var(--yellow);font-size:clamp(1.3rem,min(4.2vw,6vh),2.8rem);margin-bottom:.9em;text-align:center;text-shadow:0 5px 0 rgba(0,0,0,.4),0 0 30px rgba(255,225,74,.75);opacity:0;transform:scale(.3) translateY(30px);transition:opacity .4s,transform .6s cubic-bezier(.2,1.7,.4,1)}
+.pod-winlabel.show{opacity:1;transform:none;animation:glowpulse 2s ease-in-out infinite .7s}
+.pod-who{display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-end;gap:10px;margin-bottom:10px;max-width:100%;opacity:0;transform:translateY(60px) scale(.5);transition:opacity .4s,transform .7s cubic-bezier(.2,1.6,.4,1)}
+.pod-who.show{opacity:1;transform:none}
+.pod-team{display:flex;flex-direction:column;align-items:center;min-width:0;max-width:100%}
+.pod-emo{position:relative;font-size:clamp(2.8rem,min(9vw,13vh),6rem);line-height:1.1;filter:drop-shadow(0 8px 0 rgba(0,0,0,.3))}
+.p1 .pod-emo{font-size:clamp(3.6rem,min(12vw,19vh),8rem)}
+.pod-who.multi .pod-emo{font-size:clamp(2.4rem,min(6vw,10vh),4.4rem)}
+.pod-crown{position:absolute;left:50%;top:10%;transform:translate(-50%,-62%) rotate(-12deg);font-size:.5em;line-height:1;filter:drop-shadow(0 4px 0 rgba(0,0,0,.35));animation:crownbob 1.8s ease-in-out infinite}
+@keyframes crownbob{0%,100%{transform:translate(-50%,-62%) rotate(-12deg)}50%{transform:translate(-50%,-72%) rotate(8deg)}}
+.pod-name{font-family:var(--display);font-size:clamp(1rem,min(3vw,4.5vh),1.8rem);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;text-shadow:0 3px 0 rgba(0,0,0,.35)}
+.pod-block{width:100%;height:0;overflow:hidden;border-radius:22px 22px 0 0;display:flex;flex-direction:column;align-items:center;padding-top:10px;font-family:var(--display);color:#1a0b3a;box-shadow:inset 0 6px 0 rgba(255,255,255,.4),0 0 40px rgba(0,0,0,.3);transition:height 1s cubic-bezier(.2,1.15,.3,1)}
+.p1 .pod-block{background:linear-gradient(#ffe14a,#ff9f1a)} .p2 .pod-block{background:linear-gradient(#f1f4ff,#9aa6c9)} .p3 .pod-block{background:linear-gradient(#ffb877,#c0692b)}
+.pod-rank{font-size:clamp(2rem,min(7vw,9vh),4.2rem);line-height:1} .pod-pts{font-size:clamp(1rem,2.6vw,1.7rem)}
+.pod-actions{display:flex;gap:12px;margin-top:16px;flex-wrap:wrap;justify-content:center}
 </style>
 </head>
 <body>
@@ -378,6 +400,7 @@ input{font:inherit}
       <button class="btn ghost" id="btn-mute">🔊</button>
       <button class="btn ghost" id="btn-qr">📱 QR</button>
       <button class="btn ghost" id="btn-scores" title="Reset all scores to 0">♻️ Reset</button>
+      <button class="btn lime" id="btn-finish" title="Finish the game and show the podium">🏁 Finish</button>
       <button class="btn ghost" id="btn-end" title="End the room">⏹ End</button>
     </header>
     <div class="statusrow"><div id="status-word"></div></div>
@@ -391,6 +414,7 @@ input{font:inherit}
   </div>
 </section>
 
+<div id="podium" class="hidden"><h1 class="pod-title" id="pod-title"></h1><div class="pod-stage" id="pod-stage"></div><div class="pod-actions"><button class="btn ghost" id="pod-back">◀ Back to game</button><button class="btn pink" id="pod-end">⏹ End &amp; close room</button></div></div>
 <div id="winner"><div class="shade"></div><div class="rays"></div><div class="wemo"></div><div class="wfirst mt" id="w-first"></div><div class="wname" id="w-name"></div></div>
 
 <!-- ================= STUDENT ================= -->
@@ -754,10 +778,12 @@ function initTeacher(){
   $('btn-qr').onclick=showQrModal;
   $('btn-scores').onclick=()=>{ if(!T.teams.size) return; if(confirm('Reset every team’s score to 0?')){ for(const t of T.teams.values()){ t.score=0; sendTo(t,{t:'score',n:0}); } saveTeams(); renderBoard(); toast('Scores reset'); } };
   $('btn-end').onclick=endRoom;
+  $('btn-finish').onclick=showPodium; $('pod-back').onclick=closePodium; $('pod-end').onclick=endRoom;
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape') closePodium(); });
   const seg=$('pts'); [1,2,3,5,10].forEach(n=>{ const b=document.createElement('button'); b.textContent=n; b.onclick=()=>{ T.pts=n; segUpdate(); renderBoard(); }; seg.appendChild(b); });
   segUpdate();
   document.addEventListener('keydown',e=>{
-    if(e.code!=='Space'||!T.started||e.target.closest('input,textarea')||document.querySelector('.modal')) return;
+    if(e.code!=='Space'||!T.started||e.target.closest('input,textarea')||document.querySelector('.modal')||!$('podium').classList.contains('hidden')) return;
     e.preventDefault(); if(!e.repeat) setLocked(!T.locked);
   });
   document.addEventListener('keyup',e=>{ if(e.code==='Space'&&T.started&&!e.target.closest('input,textarea')) e.preventDefault(); });
@@ -866,6 +892,62 @@ function startGame(){
 function showQrModal(){
   const m=modal('<h2>Scan to join</h2><div class="qr-box" id="mq"></div><div class="room-code" style="font-size:2.6rem"></div><button class="btn" id="mq-x">Close</button>');
   m.querySelector('.room-code').textContent=T.code; makeQR(m.querySelector('#mq'),joinUrl(),300); m.querySelector('#mq-x').onclick=()=>m.remove();
+}
+/* ---- finish game: podium of the top 3 ---- */
+function closePodium(){
+  (T.podT||[]).forEach(clearTimeout); T.podT=[]; stopSounds();
+  $('podium').classList.add('hidden');
+}
+function showPodium(){
+  const list=[...T.teams.values()];
+  if(!list.length){ toast('No teams have joined yet'); return; }
+  const sorted=list.slice().sort((a,b)=>b.score-a.score||a.idx-b.idx);
+  if(!sorted[0].score){ toast('Award some points first, then finish the game 🏁',4000); return; }
+  if(!T.locked) setLocked(true);                      // stop buzzing while we celebrate
+  $('winner').classList.remove('show');
+  const groups=[]; sorted.forEach((t,i)=>{ const g=groups[groups.length-1]; if(g&&g.score===t.score) g.teams.push(t); else groups.push({score:t.score,place:i+1,teams:[t]}); });
+  const places=groups.filter(g=>g.place<=3);           // ties share a step (e.g. two teams on 1st, then 3rd)
+  (T.podT||[]).forEach(clearTimeout); T.podT=[];
+  motion($('pod-title'),'FINAL PODIUM',{hue:60,radius:3});
+  const stage=$('pod-stage'); stage.innerHTML='';
+  const heights={1:'min(27vh,260px)',2:'min(21vh,200px)',3:'min(16vh,150px)'}, cols=[];
+  places.slice().sort((a,b)=>({2:0,1:1,3:2}[a.place]-({2:0,1:1,3:2}[b.place]))).forEach(g=>{   // 2nd | 1st | 3rd
+    const col=document.createElement('div'); col.className='pod-col p'+g.place;
+    let wl=null;
+    if(g.place===1){ wl=document.createElement('div'); wl.className='pod-winlabel'; wl.textContent=g.teams.length>1?'👑 WINNERS! 👑':'👑 WINNER! 👑'; col.appendChild(wl); }
+    const who=document.createElement('div'); who.className='pod-who'+(g.teams.length>1?' multi':'');
+    g.teams.forEach(t=>{
+      const m=MASCOT_BY[t.emoji], tm=document.createElement('div'); tm.className='pod-team';
+      const e=document.createElement('div'); e.className='pod-emo'; e.textContent=t.emoji;
+      if(g.place===1){ const cr=document.createElement('span'); cr.className='pod-crown'; cr.textContent='👑'; e.appendChild(cr); }
+      const n=document.createElement('div'); n.className='pod-name'; n.textContent=t.name; n.style.color=m?m.c1:'#fff';
+      tm.appendChild(e); tm.appendChild(n); who.appendChild(tm);
+    });
+    const blk=document.createElement('div'); blk.className='pod-block';
+    blk.innerHTML='<div class="pod-rank"></div><div class="pod-pts"></div>';
+    blk.firstChild.textContent=g.place===1?'1st':g.place===2?'2nd':'3rd'; blk.lastChild.textContent=g.score+(g.score===1?' point':' points');
+    col.appendChild(who); col.appendChild(blk); stage.appendChild(col);
+    cols.push({g,who,blk,wl,h:heights[g.place]});
+  });
+  $('podium').classList.remove('hidden');
+  // reveal 3rd, then 2nd, then 1st with a fanfare and confetti
+  cols.slice().sort((a,b)=>b.g.place-a.g.place).forEach((c,i,arr)=>{
+    const last=i===arr.length-1, delay=400+i*1000+(last?200:0);
+    T.podT.push(setTimeout(()=>{
+      c.blk.style.height=c.h;
+      T.podT.push(setTimeout(()=>{
+        c.who.classList.add('show');
+        const r=c.who.getBoundingClientRect(), mm=MASCOT_BY[c.g.teams[0].emoji]||{c1:'#ffe14a',c2:'#ff6bd6'};
+        burst(r.left+r.width/2,r.top+r.height/2,[mm.c1,mm.c2,'#fff'],last?90:40,last?1.4:.8,c.g.teams[0].emoji);
+        if(c.wl){
+          c.wl.classList.add('show');
+          if(!T.muted) playSound('fanfare');
+          rain(['#ffe14a','#ff6bd6','#00e5ff','#7dff2e','#fff'],100,'🏆');
+          T.podT.push(setTimeout(()=>burst(innerWidth/2,innerHeight*.35,['#ffe14a','#fff','#ff9f1a'],80,1.5,null),500));
+        }
+      },450));
+    },delay));
+  });
 }
 function endRoom(){
   if(!confirm('End this room? Everyone is disconnected and scores are cleared.')) return;
