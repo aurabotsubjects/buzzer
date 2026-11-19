@@ -30,6 +30,8 @@ GitHub Pages is HTTPS, which the **record your own noise** feature needs (browse
 
 **⚔️ Playoff:** when two or more teams are tied for 1st, press **Playoff**. The buzzers lock and the tied teams are marked ⚔️. Flip to **LIVE** and only those teams can buzz; everyone else sees PLAYOFF: WATCH. It lasts one round, or press the button again to cancel. It tells you if nobody is tied.
 
+**Photo avatars:** on the mascot step a student can tap **📸 Use my own photo instead**. The camera opens (or they can pick a picture / use the camera app), the photo is cropped to a square, then they add stickers (hats, glasses, fun ones). Tap a sticker, drag it into place, and use ➕ ➖ ↺ ↻ ↔️ 🗑️ to resize, turn, flip or remove it. The finished square photo replaces the emoji on the scoreboard, buzz order, FIRST! screen, podium and the student's own buzzer. Photos only travel to the teacher's computer and are kept in the teacher's browser with the room; removing a team deletes theirs. Photo teams get their own colour automatically. The camera needs the HTTPS (GitHub Pages) site.
+
 Other controls: **Rank** turns automatic leaderboard sorting on or off, 🔊 mutes the hub, **QR** re-shows the join code for latecomers, **Reset** sets every score to 0, **End** closes the room, and the ✕ on a card (appears on hover) removes a team.
 
 **Students**
