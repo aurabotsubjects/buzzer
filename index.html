@@ -191,6 +191,15 @@ input{font:inherit}
 .card.first .face{box-shadow:0 0 0 6px #fff,0 0 60px 10px var(--c1),0 20px 40px rgba(0,0,0,.4);animation:cardin .7s both,firstglow 1s ease-in-out infinite}
 @keyframes firstglow{50%{filter:brightness(1.25) saturate(1.3)}}
 .card.offline .face{filter:grayscale(.85) brightness(.7)}
+.ban{position:absolute!important;top:10px;right:10px;font-family:var(--display);font-size:.85rem;background:var(--red);color:#fff;padding:.2em .7em;border-radius:999px;display:none;box-shadow:0 3px 0 rgba(0,0,0,.3);z-index:2}
+.card.ban-next .ban,.card.ban-now .ban,.card.po-in .ban{display:block}
+.card.ban-next .ban{background:#ff9f1a;color:#3a1d00}
+.card.po-in .ban{background:linear-gradient(180deg,#fff0a0,#ffc400);color:#5a3a00}
+.card.ban-now .face{filter:grayscale(.9) brightness(.65)}
+.card.po-out .face{filter:grayscale(.8) brightness(.6)}
+#btn-playoff.armed{animation:livepulse 1.2s ease-in-out infinite}
+.bigbtn.banned{filter:grayscale(1) brightness(.5);animation:none}
+.bigbtn.banned .e{animation:none;opacity:.45}
 .float-plus{position:fixed;z-index:210;font-family:var(--display);font-size:3rem;color:#fff;text-shadow:0 4px 0 rgba(0,0,0,.4),0 0 20px var(--c);pointer-events:none;animation:floatup 1.1s ease-out forwards}
 @keyframes floatup{from{transform:translate(-50%,0) scale(.4);opacity:1}to{transform:translate(-50%,-140px) scale(1.5);opacity:0}}
 
@@ -397,6 +406,7 @@ input{font:inherit}
       <div class="spacer"></div>
       <button class="btn ghost" id="btn-sort">↕ Rank: on</button>
       <button class="btn ghost" id="btn-clear" title="Clear the buzz list">🧹 Clear</button>
+      <button class="btn pink" id="btn-playoff" title="Tie-breaker: only the teams tied for 1st can buzz next round">⚔️ Playoff</button>
       <button class="btn ghost" id="btn-mute">🔊</button>
       <button class="btn ghost" id="btn-qr">📱 QR</button>
       <button class="btn ghost" id="btn-scores" title="Reset all scores to 0">♻️ Reset</button>
@@ -762,7 +772,7 @@ if(roomParam) initStudent(roomParam);
 /* =====================================================================
    TEACHER
    ===================================================================== */
-const T={ code:null, peer:null, open:false, started:false, locked:true, round:1, teams:new Map(), pending:new Map(), order:[], pts:1, muted:false, rank:true, retries:0, t0:0, idx:0, lastAdded:null, winTimer:0 };
+const T={ code:null, peer:null, open:false, started:false, locked:true, round:1, teams:new Map(), pending:new Map(), order:[], pts:1, muted:false, rank:true, retries:0, t0:0, idx:0, lastAdded:null, winTimer:0, playoff:null };
 
 function initTeacher(){
   hide('landing'); show('teacher'); document.title='Buzzer! · Teacher';
@@ -772,7 +782,8 @@ function initTeacher(){
   ac(); prewarmSounds(); // unlock audio inside this click, and get every sound ready to fire instantly
   $('btn-start').onclick=startGame;
   $('lock').onclick=()=>setLocked(!T.locked);
-  $('btn-clear').onclick=()=>{ newRound(); toast('Buzz list cleared'); };
+  $('btn-clear').onclick=()=>{ newRound(); if(!T.locked){ startRoundRules(); sendEligAll(); } toast('Buzz list cleared'); };
+  $('btn-playoff').onclick=togglePlayoff;
   $('btn-sort').onclick=()=>{ T.rank=!T.rank; $('btn-sort').textContent='↕ Rank: '+(T.rank?'on':'off'); renderBoard(); };
   $('btn-mute').onclick=()=>{ T.muted=!T.muted; $('btn-mute').textContent=T.muted?'🔇':'🔊'; };
   $('btn-qr').onclick=showQrModal;
@@ -818,12 +829,12 @@ function joinUrl(){ return location.origin+location.pathname+'?room='+T.code; }
 function applyView(){ $('t-lobby').classList.toggle('hidden',T.started); $('t-game').classList.toggle('hidden',!T.started); if(T.started) updateLockUI(); }
 
 function saveTeams(){
-  const o={}; for(const t of T.teams.values()) o[t.cid]={name:t.name,emoji:t.emoji,sound:t.sound,score:t.score,idx:t.idx};
+  const o={}; for(const t of T.teams.values()) o[t.cid]={name:t.name,emoji:t.emoji,sound:t.sound,score:t.score,idx:t.idx,ban:t.ban||0};
   lsSet('buzzer_teams_'+T.code,JSON.stringify(o));
 }
 function restoreTeams(code){
   try{ const o=JSON.parse(lsGet('buzzer_teams_'+code)||'{}');
-    Object.entries(o).forEach(([cid,v])=>{ if(!MASCOT_BY[v.emoji]) return; T.teams.set(cid,{cid,name:v.name,emoji:v.emoji,sound:v.sound,rec:null,score:v.score||0,idx:v.idx||T.idx++,conn:null,online:false,el:null}); T.idx=Math.max(T.idx,(v.idx||0)+1); });
+    Object.entries(o).forEach(([cid,v])=>{ if(!MASCOT_BY[v.emoji]) return; T.teams.set(cid,{cid,name:v.name,emoji:v.emoji,sound:v.sound,rec:null,score:v.score||0,ban:v.ban||0,idx:v.idx||T.idx++,conn:null,online:false,el:null}); T.idx=Math.max(T.idx,(v.idx||0)+1); });
   }catch(e){}
 }
 function takenLists(){ const emojis=[],sounds=[]; for(const t of T.teams.values()){ emojis.push(t.emoji); if(t.sound!=='rec') sounds.push(t.sound); } return {emojis,sounds}; }
@@ -850,7 +861,7 @@ function onStudentConnection(conn){
 }
 function handleStudent(conn,cid,d){
   if(d.t==='ping'){ try{ conn.send({t:'pong'}); }catch(e){} return; }
-  if(d.t==='hello'){ const t=T.teams.get(cid); try{ conn.send({t:'state',...takenLists(),locked:T.locked,round:T.round,team:t?{name:t.name,emoji:t.emoji,sound:t.sound,score:t.score}:null,pos:posOf(cid)}); }catch(e){} return; }
+  if(d.t==='hello'){ const t=T.teams.get(cid); try{ conn.send({t:'state',...takenLists(),locked:T.locked,round:T.round,team:t?{name:t.name,emoji:t.emoji,sound:t.sound,score:t.score}:null,pos:posOf(cid),elig:t?eligOf(t):'ok'}); }catch(e){} return; }
   if(d.t==='claim') return onClaim(conn,cid,d);
   const t=T.teams.get(cid); if(!t||t.conn!==conn) return;
   if(d.t==='buzz') onBuzz(t);
@@ -863,11 +874,11 @@ function onClaim(conn,cid,d){
   if(sound==='rec' && !(typeof d.rec==='string' && d.rec.startsWith('data:audio') && d.rec.length<450000)) return fail('rec');
   for(const o of T.teams.values()){ if(o.cid===cid) continue; if(o.emoji===emoji) return fail('mascot'); if(sound!=='rec'&&o.sound===sound) return fail('sound'); }
   let t=T.teams.get(cid);
-  if(!t){ t={cid,score:0,idx:T.idx++,el:null,online:true}; T.teams.set(cid,t); T.pending.delete(cid); if(T.started) lastJoinFx=cid; }
+  if(!t){ t={cid,score:0,ban:0,idx:T.idx++,el:null,online:true}; T.teams.set(cid,t); T.pending.delete(cid); if(T.started) lastJoinFx=cid; }
   Object.assign(t,{name,emoji,sound,rec:sound==='rec'?d.rec:null,conn,online:true});
   if(t.rec) recBuffer(t.rec).catch(()=>{});
   saveTeams();
-  try{ conn.send({t:'claimed',ok:true,team:{name,emoji,sound,score:t.score},locked:T.locked,round:T.round,pos:posOf(cid)}); }catch(e){}
+  try{ conn.send({t:'claimed',ok:true,team:{name,emoji,sound,score:t.score},locked:T.locked,round:T.round,pos:posOf(cid),elig:eligOf(t)}); }catch(e){}
   bcastTaken(); renderLobby(); renderBoard(); renderOrder();
 }
 let lastJoinFx=null;
@@ -959,8 +970,9 @@ function endRoom(){
 /* ---- lock & rounds ---- */
 function setLocked(on){
   if(!T.started) return;
-  if(!on) newRound(true);
+  if(!on){ newRound(true); startRoundRules(); }
   T.locked=on; updateLockUI(); bcast({t:'lock',on,round:T.round});
+  if(!on) sendEligAll();
   if(!on) burst(innerWidth/2,90,['#2bff88','#8dff3a','#ffe14a'],60,1.1);
 }
 function newRound(silent){
@@ -970,8 +982,43 @@ function newRound(silent){
 function updateLockUI(){
   const b=$('lock'); b.classList.toggle('live',!T.locked); b.setAttribute('aria-checked',String(!T.locked));
   b.querySelector('.knob').textContent=T.locked?'🔒':'🔓'; b.querySelector('.lbl').textContent=T.locked?'LOCKED':'LIVE!';
-  const w=$('status-word'); const txt=T.locked?'🔒 BUZZERS LOCKED':'🟢 BUZZ NOW!';
+  const w=$('status-word'); const po=T.playoff; const txt=T.locked?(po?'⚔️ PLAYOFF READY':'🔒 BUZZERS LOCKED'):(po&&po.state===2?'⚔️ PLAYOFF BUZZ!':'🟢 BUZZ NOW!');
   if(w.dataset.s!==txt){ w.dataset.s=txt; motion(w,txt,T.locked?{mono:'#ff8a93'}:{hue:90}); }
+}
+/* ---- one-round bans (0 points + wrong answer) and playoff rounds ----
+   t.ban: 0 = free, 1 = banned from the NEXT round, 2 = sitting out the round that is running now.
+   T.playoff: null, or {ids:Set of cids, state:1 armed (waiting for LIVE) | 2 this round is the playoff}. */
+function eligOf(t){
+  if(t.ban===2) return 'banned';
+  if(T.playoff&&T.playoff.state===2&&!T.playoff.ids.has(t.cid)) return 'playoff';
+  return 'ok';
+}
+function startRoundRules(){        // called each time a new live round begins
+  for(const t of T.teams.values()){ if(t.ban===2) t.ban=0; if(t.ban===1) t.ban=2; }
+  if(T.playoff){ if(T.playoff.state===2) T.playoff=null; else T.playoff.state=2; }
+  saveTeams(); updatePlayoffUI(); renderBoard();
+}
+function sendElig(t){ sendTo(t,{t:'elig',v:eligOf(t),next:t.ban===1}); }
+function sendEligAll(){ for(const t of T.teams.values()) sendElig(t); }
+function togglePlayoff(){
+  if(!T.started) return;
+  if(T.playoff){ T.playoff=null; sendEligAll(); updatePlayoffUI(); renderBoard(); toast('Playoff cancelled'); return; }
+  const list=[...T.teams.values()]; const top=list.reduce((m,t)=>Math.max(m,t.score),0);
+  const leaders=list.filter(t=>t.score===top);
+  if(!list.length||top<=0){ toast('Award some points first. Playoff is for teams tied in 1st place.',4500); return; }
+  if(leaders.length<2){ toast(leaders[0].emoji+' '+leaders[0].name+' is the only team in 1st place. No playoff needed!',4500); return; }
+  if(!T.locked) setLocked(true);
+  newRound();
+  T.playoff={ids:new Set(leaders.map(t=>t.cid)),state:1};
+  updatePlayoffUI(); renderBoard();
+  toast('⚔️ Playoff! '+leaders.map(t=>t.emoji+' '+t.name).join(' vs ')+'. Flip to LIVE when the question is ready.',7000);
+}
+function updatePlayoffUI(){
+  const b=$('btn-playoff'); if(!b) return; const on=!!T.playoff;
+  b.classList.toggle('armed',on);
+  b.textContent=on?(T.playoff.state===1?'⚔️ Playoff ready ✕':'⚔️ Playoff LIVE ✕'):'⚔️ Playoff';
+  if($('t-game')&&T.started) updateLockUI();
+  b.title=on?'Click to cancel the playoff':'Tie-breaker: only the teams tied for 1st can buzz next round';
 }
 function posOf(cid){ const i=T.order.findIndex(o=>o.cid===cid); return i<0?0:i+1; }
 
@@ -979,6 +1026,7 @@ function posOf(cid){ const i=T.order.findIndex(o=>o.cid===cid); return i<0?0:i+1
 function onBuzz(t){
   if(T.locked||!T.started){ sendTo(t,{t:'pos',n:0,why:'locked'}); return; }
   const have=posOf(t.cid); if(have){ sendTo(t,{t:'pos',n:have}); return; }
+  const el=eligOf(t); if(el!=='ok'){ sendTo(t,{t:'pos',n:0,why:el}); return; }
   const now=performance.now(); T.order.push({cid:t.cid,time:now}); T.lastAdded=t.cid;
   const n=T.order.length; sendTo(t,{t:'pos',n});
   if(n===1){ T.t0=now; announceFirst(t); bcast({t:'first',name:t.name,emoji:t.emoji,cid:t.cid}); }
@@ -1014,7 +1062,7 @@ function renderOrder(){
 /* ---- scoreboard ---- */
 function makeCard(t){
   const c=document.createElement('div'); c.className='card'; setTeamColors(c,t.emoji);
-  c.innerHTML='<div class="face"><span class="rank"></span><button class="rm" title="Remove team">✕</button><div class="emo"></div><div class="nm"></div><div class="sc">0</div><div class="pbtns"><button class="minus"></button><button class="plus"></button></div><div class="bz"></div></div>';
+  c.innerHTML='<div class="face"><span class="rank"></span><span class="ban"></span><button class="rm" title="Remove team">✕</button><div class="emo"></div><div class="nm"></div><div class="sc">0</div><div class="pbtns"><button class="minus"></button><button class="plus"></button></div><div class="bz"></div></div>';
   const f=c.querySelector('.face');
   f.addEventListener('pointermove',e=>{ if(e.pointerType==='touch') return; const r=f.getBoundingClientRect(), x=(e.clientX-r.left)/r.width, y=(e.clientY-r.top)/r.height; c.style.setProperty('--ry',((x-.5)*16)+'deg'); c.style.setProperty('--rx',((.5-y)*16)+'deg'); f.style.setProperty('--mx',x*100+'%'); f.style.setProperty('--my',y*100+'%'); });
   f.addEventListener('pointerleave',()=>{ c.style.setProperty('--rx','0deg'); c.style.setProperty('--ry','0deg'); });
@@ -1051,10 +1099,18 @@ function renderBoard(){
   if(lastJoinFx){ const t=T.teams.get(lastJoinFx); lastJoinFx=null; if(t&&t.el){ const r=t.el.getBoundingClientRect(); burst(r.left+r.width/2,r.top+r.height/2,[MASCOT_BY[t.emoji].c1,MASCOT_BY[t.emoji].c2],40,.8,t.emoji); } }
 }
 function updateBadges(){
-  for(const t of T.teams.values()){ if(!t.el) continue; const p=posOf(t.cid); t.el.classList.toggle('has-pos',!!p); t.el.classList.toggle('first',p===1); t.el.querySelector('.bz').textContent=p?(p===1?'⚡ ':'')+ordinal(p):''; }
+  for(const t of T.teams.values()){ if(!t.el) continue; const p=posOf(t.cid); t.el.classList.toggle('has-pos',!!p); t.el.classList.toggle('first',p===1); t.el.querySelector('.bz').textContent=p?(p===1?'⚡ ':'')+ordinal(p):'';
+    const po=T.playoff, inPo=!!(po&&po.ids.has(t.cid));
+    t.el.classList.toggle('ban-next',t.ban===1); t.el.classList.toggle('ban-now',t.ban===2);
+    t.el.classList.toggle('po-in',inPo); t.el.classList.toggle('po-out',!!(po&&po.state===2&&!inPo));
+    t.el.querySelector('.ban').textContent=t.ban===2?'🚫 OUT THIS ROUND':t.ban===1?'🚫 OUT NEXT ROUND':inPo?'⚔️ PLAYOFF':''; }
 }
 function award(cid,delta,x,y){
   const t=T.teams.get(cid); if(!t) return;
+  if(delta<0&&t.score===0){          // wrong answer while already on 0: banned from the next round
+    if(t.ban===0){ t.ban=1; saveTeams(); sendElig(t); renderBoard(); toast('🚫 '+t.emoji+' '+t.name+' is on 0 and sits out the next round',4000); }
+    return;
+  }
   const ns=Math.max(0,t.score+delta); if(ns===t.score) return;
   t.score=ns; saveTeams(); sendTo(t,{t:'score',n:ns,d:delta});
   const m=MASCOT_BY[t.emoji];
@@ -1078,7 +1134,7 @@ function initStudent(code){
   hide('landing'); show('student'); document.title='Buzzer! · Join';
   let cid=lsGet('buzzer_cid'); if(!cid){ cid=rid(12); lsSet('buzzer_cid',cid); }
   const S={ code, cid, name:lsGet('buzzer_name')||'', peer:null, conn:null, joined:false, kicked:false, step:'join',
-            taken:{emojis:[],sounds:[]}, pick:{emoji:null,sound:null}, rec:null, team:null, locked:true, round:0, pos:0, score:0 };
+            taken:{emojis:[],sounds:[]}, pick:{emoji:null,sound:null}, rec:null, team:null, locked:true, round:0, pos:0, score:0, elig:'ok' };
   try{ const sv=JSON.parse(lsGet('buzzer_team_'+code)||'null'); if(sv&&MASCOT_BY[sv.emoji]){ S.team=sv; S.name=sv.name; } }catch(e){}
   $('join-room').textContent=code; $('name-in').value=S.name;
   motion($('s-title'),'BUZZER');
@@ -1186,13 +1242,17 @@ function initStudent(code){
     if(S.step!=='buzz') return;
     const bb=$('bigbtn'), t=$('bb-t'), w=$('s-word'); const was=bb.dataset.k;
     let k;
-    if(S.pos>0) k='done'+S.pos; else k=S.locked?'locked':'ready';
+    if(S.pos>0) k='done'+S.pos; else if(!S.locked&&S.elig!=='ok') k='out-'+S.elig; else k=S.locked?'locked':'ready';
     if(k===was) return; bb.dataset.k=k;
-    bb.classList.remove('locked','ready','done','first');
+    bb.classList.remove('locked','ready','done','first','banned');
     if(S.pos>0){
       bb.classList.add('done'); if(S.pos===1) bb.classList.add('first'); $('bb-ord').textContent=ordinal(S.pos); t.textContent=S.pos===1?'FIRST!':'GOT IT!';
       motion(w,S.pos===1?'YOU WERE FIRST!':ordinal(S.pos)+' PLACE!',{hue:S.pos===1?40:200});
       if(S.pos===1){ const m=MASCOT_BY[S.team.emoji]; burst(innerWidth/2,innerHeight/2,[m.c1,m.c2,'#fff','#ffe14a'],140,1.4,S.team.emoji); rain([m.c1,m.c2,'#fff'],70,S.team.emoji); }
+    } else if(!S.locked&&S.elig!=='ok'){
+      bb.classList.add('banned');
+      if(S.elig==='banned'){ t.textContent='BANNED 🚫'; motion(w,'SITTING OUT THIS ROUND',{mono:'#ff8a93'}); }
+      else { t.textContent='PLAYOFF 👀'; motion(w,'PLAYOFF: WATCH!',{mono:'#b9aee6'}); }
     } else if(S.locked){ bb.classList.add('locked'); t.textContent='LOCKED'; motion(w,'WAIT FOR IT…',{mono:'#b9aee6'}); }
     else { bb.classList.add('ready'); t.textContent='BUZZ!'; motion(w,'GO GO GO!',{hue:100}); }
   }
@@ -1200,6 +1260,7 @@ function initStudent(code){
   const bb=$('bigbtn');
   bb.addEventListener('pointerdown',e=>{
     e.preventDefault(); if(S.step!=='buzz'||S.pos>0) return;
+    if(!S.locked&&S.elig!=='ok'){ bb.classList.remove('shake'); void bb.offsetWidth; bb.classList.add('shake'); banner(S.elig==='banned'?'🚫 You are sitting out this round.':'⚔️ Playoff: only the tied teams can buzz.'); setTimeout(()=>bb.classList.remove('shake'),450); return; }
     if(S.locked){ bb.classList.remove('shake'); void bb.offsetWidth; bb.classList.add('shake'); banner('Wait! Your teacher has not opened the buzzers.'); setTimeout(()=>bb.classList.remove('shake'),450); return; }
     try{ navigator.vibrate&&navigator.vibrate(40); }catch(_){}
     bb.classList.add('press'); setTimeout(()=>bb.classList.remove('press'),160);
@@ -1211,7 +1272,7 @@ function initStudent(code){
   function onData(d){
     if(!d||typeof d!=='object') return;
     if(d.t==='state'){
-      S.taken={emojis:d.emojis||[],sounds:d.sounds||[]}; S.locked=d.locked!==false; S.round=d.round||0; S.pos=d.pos||0;
+      S.taken={emojis:d.emojis||[],sounds:d.sounds||[]}; S.locked=d.locked!==false; S.round=d.round||0; S.pos=d.pos||0; S.elig=d.elig||'ok';
       if(S.team){ send({t:'claim',name:S.team.name,emoji:S.team.emoji,sound:S.team.sound,rec:S.team.sound==='rec'?S.team.rec:undefined}); }
       else if(d.team){ S.team=d.team; go('buzz'); }
       else if(S.step==='join'){ go('mascot'); }
@@ -1228,7 +1289,7 @@ function initStudent(code){
     }
     else if(d.t==='claimed'){
       if(d.ok){
-        S.team={...d.team,rec:d.team.sound==='rec'?S.rec||(S.team&&S.team.rec):null}; S.locked=d.locked!==false; S.round=d.round||S.round; S.pos=d.pos||0;
+        S.team={...d.team,rec:d.team.sound==='rec'?S.rec||(S.team&&S.team.rec):null}; S.locked=d.locked!==false; S.round=d.round||S.round; S.pos=d.pos||0; S.elig=d.elig||'ok';
         lsSet('buzzer_team_'+code,JSON.stringify(S.team)); lsSet('buzzer_name',S.team.name);
         if(S.step!=='buzz') go('buzz'); else enterBuzz();
       } else {
@@ -1243,7 +1304,8 @@ function initStudent(code){
       if(d.round!==S.round){ S.round=d.round; S.pos=0; $('bigbtn').dataset.k=''; $('s-banner').innerHTML=''; }
       S.locked=!!d.on; updateBuzz();
     }
-    else if(d.t==='pos'){ if(d.n>0){ const wasFirst=(d.n===1&&S.pos!==1); S.pos=d.n; updateBuzz(); if(wasFirst&&S.team) playSound(S.team.sound,S.team.rec); } else if(d.why==='locked'){ S.locked=true; updateBuzz(); } }
+    else if(d.t==='elig'){ S.elig=d.v||'ok'; $('bigbtn').dataset.k=''; updateBuzz(); if(d.next) banner('🚫 You are on 0 and sit out the next round.'); }
+    else if(d.t==='pos'){ if(d.n>0){ const wasFirst=(d.n===1&&S.pos!==1); S.pos=d.n; updateBuzz(); if(wasFirst&&S.team) playSound(S.team.sound,S.team.rec); } else if(d.why==='locked'){ S.locked=true; updateBuzz(); } else if(d.why==='banned'||d.why==='playoff'){ S.elig=d.why; $('bigbtn').dataset.k=''; updateBuzz(); } }
     else if(d.t==='score'){ S.score=d.n||0; $('s-score').textContent=S.score; const p=$('s-scorepill'); p.classList.remove('bump'); void p.offsetWidth; p.classList.add('bump'); if(d.d>0&&S.team){ const m=MASCOT_BY[S.team.emoji]; burst(innerWidth-70,60,[m.c1,m.c2,'#ffe14a'],50,1,S.team.emoji); banner('⭐ +'+d.d+' points!'); } if(S.team){ S.team.score=S.score; lsSet('buzzer_team_'+code,JSON.stringify(S.team)); } }
     else if(d.t==='first'){ if(d.cid!==S.cid) banner(d.emoji+' '+d.name+' buzzed first!'); }
     else if(d.t==='kick'){ S.kicked=true; lsDel('buzzer_team_'+code); try{S.peer.destroy();}catch(e){} $('removed').classList.remove('hidden'); }

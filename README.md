@@ -26,6 +26,10 @@ GitHub Pages is HTTPS, which the **record your own noise** feature needs (browse
 
 **Finishing the game:** press **🏁 Finish** to lock the buzzers and show a podium of the top 3 teams. 3rd place rises first, then 2nd, then the winner with a fanfare, confetti and a 👑 on their emoji under a big WINNER! banner. Teams on the same score share a step (two teams tied for first both get the crown). **Back to game** (or Esc) returns to the scoreboard, and **End & close room** closes everything. It asks you to award some points first if nobody has scored.
 
+**One-round ban:** if a team is already on **0** and you press **−** because they got it wrong, they are banned from buzzing for the next round (their card shows 🚫 and their button greys out and says BANNED). The ban counts from the next time you flip to **LIVE** (or press **Clear** while live). After that one round they are back in, still on 0.
+
+**⚔️ Playoff:** when two or more teams are tied for 1st, press **Playoff**. The buzzers lock and the tied teams are marked ⚔️. Flip to **LIVE** and only those teams can buzz; everyone else sees PLAYOFF: WATCH. It lasts one round, or press the button again to cancel. It tells you if nobody is tied.
+
 Other controls: **Rank** turns automatic leaderboard sorting on or off, 🔊 mutes the hub, **QR** re-shows the join code for latecomers, **Reset** sets every score to 0, **End** closes the room, and the ✕ on a card (appears on hover) removes a team.
 
 **Students**
